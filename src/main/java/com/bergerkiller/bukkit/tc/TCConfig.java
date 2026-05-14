@@ -71,6 +71,7 @@ public class TCConfig {
     public static boolean optimizeInteraction;
     public static boolean allowPlayerCollisionFromBehind;
     public static boolean showTransferAnimations;
+    public static boolean showDisplayNameAboveTrains;
     public static boolean craftingRequireWorkbench;
     public static boolean slowDownEmptyCarts;
     public static boolean enableSeatThirdPersonView;
@@ -480,6 +481,9 @@ public class TCConfig {
 
         config.setHeader("showTransferAnimations", "\nWhether or not to show item animations when transferring items");
         showTransferAnimations = config.get("showTransferAnimations", true);
+
+        config.setHeader("showDisplayNameAboveTrains", "\nWhether to show a train's display name as a floating label above its lead cart. Requires MC 1.19.4+.");
+        showDisplayNameAboveTrains = config.get("showDisplayNameAboveTrains", true);
 
         config.setHeader("craftingRequireWorkbench", "\nWhether a crafting table must exist when crafting items inside a storage minecart\n" +
                 "When this is set to false and no crafting table is nearby, no item transfer animations are shown");

@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import com.bergerkiller.bukkit.tc.TCConfig;
+import com.bergerkiller.bukkit.tc.attachments.TrainNameplate;
 import com.bergerkiller.bukkit.tc.attachments.api.AttachmentNameLookup;
 import com.bergerkiller.bukkit.tc.attachments.config.SavedAttachmentModel;
 import com.bergerkiller.bukkit.tc.attachments.config.SavedAttachmentModelStore;
@@ -27,9 +29,12 @@ public class AttachmentControllerGroup
     private int movementCounter;
     private int ticksSinceLocationSync = 0;
     private SoftReference<AttachmentNameLookup> cachedByNameLookup = new SoftReference<>(null);
+    private final TrainNameplate nameplate;
 
     public AttachmentControllerGroup(MinecartGroup group) {
         this.group = group;
+        this.nameplate = (TCConfig.showDisplayNameAboveTrains && TrainNameplate.isSupported())
+                ? new TrainNameplate(group) : null;
     }
 
     public MinecartGroup getGroup() {
@@ -49,6 +54,10 @@ public class AttachmentControllerGroup
             for (MinecartMember<?> member : group) {
                 member.getAttachments().syncMovement(true);
             }
+            if (nameplate != null) {
+                nameplate.tick();
+                nameplate.syncPosition(true);
+            }
         }
     }
 
@@ -57,6 +66,9 @@ public class AttachmentControllerGroup
         {
             for (MinecartMember<?> member : this.group) {
                 member.getAttachments().syncPostPositionUpdate();
+            }
+            if (nameplate != null) {
+                nameplate.tick();
             }
         }
 
@@ -77,6 +89,9 @@ public class AttachmentControllerGroup
                 for (MinecartMember<?> member : group) {
                     member.getAttachments().syncMovement(true);
                 }
+                if (nameplate != null) {
+                    nameplate.syncPosition(true);
+                }
             } else {
                 // Perform relative updates
                 boolean needsSync = isUpdateTick;
@@ -95,6 +110,9 @@ public class AttachmentControllerGroup
                     // Perform actual updates
                     for (MinecartMember<?> member : group) {
                         member.getAttachments().syncMovement(false);
+                    }
+                    if (nameplate != null) {
+                        nameplate.syncPosition(false);
                     }
                 }
             }
@@ -134,6 +152,17 @@ public class AttachmentControllerGroup
             cachedByNameLookup = new SoftReference<>(cached = AttachmentNameLookup.merge(components));
         }
         return cached;
+    }
+
+    /**
+     * Tears down group-level decorations (currently just the train nameplate).
+     * Must be called when the group is destroyed or unloaded so that floating
+     * entities don't leak on the client side.
+     */
+    public void notifyGroupRemoved() {
+        if (nameplate != null) {
+            nameplate.destroyAll();
+        }
     }
 
     /**

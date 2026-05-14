@@ -609,6 +609,7 @@ public class MinecartGroup extends MinecartGroupStore implements IPropertiesHold
     }
 
     public void destroy() {
+        this.attachmentController.notifyGroupRemoved();
         List<MinecartMember<?>> copy = new ArrayList<MinecartMember<?>>(this);
         for (MinecartMember<?> mm : copy) {
             mm.getEntity().remove();
@@ -638,6 +639,9 @@ public class MinecartGroup extends MinecartGroupStore implements IPropertiesHold
         // Protect.
         Util.checkMainThread("MinecartGroup::unload()");
         this.unloaded = true;
+
+        // Tear down group-level decorations (nameplate) before members go offline
+        this.attachmentController.notifyGroupRemoved();
 
         try {
             // Undo partial-unloading before calling the event
