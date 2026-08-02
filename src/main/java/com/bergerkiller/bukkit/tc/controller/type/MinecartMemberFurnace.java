@@ -189,15 +189,29 @@ public class MinecartMemberFurnace extends MinecartMember<CommonMinecartFurnace>
                     }
                     dir.multiply(0.04 + TCConfig.poweredCartBoost);
 
-                    entity.vel.multiply(0.8);
-                    entity.vel.add(dir);
-                } else if (this.getGroup().getProperties().isSlowingDown(SlowdownMode.FRICTION)) {
-                    entity.vel.multiply(0.98);
+                    Vector oldVelocity = entity.getVelocity();
+                    Vector newVelocity = oldVelocity.clone();
+                    newVelocity.multiply(0.8);
+                    newVelocity.add(dir);
+
+                    // Only apply this velocity change if it is faster, or the opposite direction
+                    if (newVelocity.dot(oldVelocity) < 0.0 || newVelocity.lengthSquared() > oldVelocity.lengthSquared()) {
+                        entity.vel.set(newVelocity);
+                    }
                 }
             }
 
             // Persistence
             this.updatePushXZ();
+        }
+    }
+
+    @Override
+    protected double getSlowDownFactor() {
+        if (entity.hasFuel()) {
+            return TCConfig.slowDownMultiplierNormal;
+        } else {
+            return TCConfig.slowDownMultiplierNoFuel;
         }
     }
 

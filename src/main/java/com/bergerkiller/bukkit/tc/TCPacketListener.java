@@ -6,6 +6,7 @@ import com.bergerkiller.bukkit.common.collections.ImplicitlySharedSet;
 import com.bergerkiller.bukkit.common.conversion.type.HandleConversion;
 import com.bergerkiller.bukkit.common.events.PacketReceiveEvent;
 import com.bergerkiller.bukkit.common.events.PacketSendEvent;
+import com.bergerkiller.bukkit.common.internal.CommonBootstrap;
 import com.bergerkiller.bukkit.common.internal.CommonCapabilities;
 import com.bergerkiller.bukkit.common.protocol.CommonPacket;
 import com.bergerkiller.bukkit.common.protocol.PacketListener;
@@ -13,9 +14,11 @@ import com.bergerkiller.bukkit.common.protocol.PacketType;
 import com.bergerkiller.bukkit.common.utils.CommonUtil;
 import com.bergerkiller.bukkit.common.utils.WorldUtil;
 import com.bergerkiller.bukkit.common.wrappers.HumanHand;
+import com.bergerkiller.bukkit.tc.attachments.api.Attachment;
 import com.bergerkiller.bukkit.tc.controller.MinecartGroup;
 import com.bergerkiller.bukkit.tc.controller.MinecartGroupStore;
 import com.bergerkiller.bukkit.tc.controller.MinecartMember;
+import com.bergerkiller.bukkit.tc.events.attachment.AttachmentInteractEvent;
 import com.bergerkiller.generated.net.minecraft.network.protocol.game.ServerboundAttackPacketHandle;
 import com.bergerkiller.generated.net.minecraft.network.protocol.game.ServerboundPlayerInputPacketHandle;
 import com.bergerkiller.generated.net.minecraft.network.protocol.game.ServerboundInteractPacketHandle;
@@ -42,6 +45,12 @@ class TCPacketListener implements PacketListener {
     public static final PacketType[] LISTENED_TYPES = new PacketType[] {
             PacketType.IN_STEER_VEHICLE, PacketType.IN_INTERACT, PacketType.IN_ATTACK, PacketType.IN_PLAYER_COMMAND
     };
+
+    /**
+     * After Minecraft 26.1 the interact-at position is expected to always be present. But before, the with and without at position
+     * had completely different handlers. And for things to work properly, we must null out any at position.
+     */
+    private static final boolean INTERACT_REWRITE_KEEP_AT = CommonBootstrap.evaluateMCVersion(">=", "26.1");
 
     private final TrainCarts traincarts;
     private final Map<Player, Long> lastHitTime = new HashMap<Player, Long>();
@@ -163,20 +172,21 @@ class TCPacketListener implements PacketListener {
                         if (!member.getAttachments().isViewer(event.getPlayer())) {
                             continue; // If not visible, don't loop through the model to check this
                         }
-                        if (!member.getAttachments().isAttachment(entityId)) {
+                        Attachment clickedAttachment = member.getAttachments().findAttachmentByEntityId(entityId);
+                        if (clickedAttachment == null) {
                             continue; // Id is not used in the model
                         }
 
-                        // If nearby the player, allow standard interaction. Otherwise, do all of this ourselves.
-                        // Minecraft enforces a 3 block radius when not having line of sight, assume this limit.
-                        if (member.getEntity().loc.distanceSquared(eyeLoc) < (3.0 * 3.0)) {
-                            // Rewrite the packet
-                            event.setPacket(ServerboundAttackPacketHandle.createNew(member.getEntity().getEntityId()));
-                            return; // Allow
-                        }
-
                         // Cancel the attack and handle this ourselves.
-                        fakeAttack(member, event.getPlayer());
+                        handleInteractionWithAttachment(member, new AttachmentInteractEvent(
+                                event.getPlayer(),
+                                true,
+                                HumanHand.getMainHand(event.getPlayer()),
+                                null,
+                                entityId,
+                                clickedAttachment,
+                                null
+                        ));
                         event.setCancelled(true);
                         return;
                     }
@@ -185,9 +195,13 @@ class TCPacketListener implements PacketListener {
         } else if (event.getType() == PacketType.IN_INTERACT) {
             ServerboundInteractPacketHandle packet_use = ServerboundInteractPacketHandle.createHandle(event.getPacket().getHandle());
 
+            // Extract sneaking as true/false or null if not supported/known by packet API
+            Boolean sneaking = ServerboundInteractPacketHandle.hasSecondaryActionField() ?
+                    packet_use.isUsingSecondaryAction() : null;
+
             // Since 1.16 this packet has a sneaking property
             // If we're inside a vehicle, disable it
-            if (packet_use.isUsingSecondaryAction()) {
+            if (sneaking != null && sneaking) {
                 if (player.getVehicle() == null) {
                     TCSeatChangeListener.markForUnmounting(traincarts, player);
                 } else if (!traincarts.handlePlayerVehicleChange(player, null)) {
@@ -198,6 +212,7 @@ class TCPacketListener implements PacketListener {
 
             // When a player interacts with a virtual attachment, the main entity should receive the interaction
             int entityId = packet_use.getUsedEntityId();
+
             if (WorldUtil.getEntityById(event.getPlayer().getWorld(), entityId) != null) {
                 return; // Is a valid Entity. Ignore it.
             }
@@ -219,7 +234,8 @@ class TCPacketListener implements PacketListener {
                         if (!member.getAttachments().isViewer(event.getPlayer())) {
                             continue; // If not visible, don't loop through the model to check this
                         }
-                        if (!member.getAttachments().isAttachment(entityId)) {
+                        Attachment clickedAttachment = member.getAttachments().findAttachmentByEntityId(entityId);
+                        if (clickedAttachment == null) {
                             continue; // Id is not used in the model
                         }
 
@@ -232,21 +248,16 @@ class TCPacketListener implements PacketListener {
                             return;
                         }
 
-                        // If nearby the player, allow standard interaction. Otherwise, do all of this ourselves.
-                        // Minecraft enforces a 3 block radius when not having line of sight, assume this limit.
-                        if (member.getEntity().loc.distanceSquared(eyeLoc) < (3.0 * 3.0)) {
-                            // Must track this to cancel superfluous LEFT clicks that happen later
-                            this.suppressAttacksFor(event.getPlayer(), ATTACK_SUPPRESS_DURATION);
-
-                            // Rewrite the packet
-                            packet_use = ServerboundInteractPacketHandle.withUsedEntityId(packet_use, member.getEntity().getEntityId());
-                            event.setPacket(packet_use);
-                            return; // Allow
-                        }
-
                         // Cancel the interaction and handle this ourselves.
-                        HumanHand hand = packet_use.getHand(event.getPlayer());
-                        fakeInteraction(member, event.getPlayer(), hand, packet_use.getInteractAtPosition());
+                        handleInteractionWithAttachment(member, new AttachmentInteractEvent(
+                                event.getPlayer(),
+                                false,
+                                packet_use.getHand(event.getPlayer()),
+                                sneaking,
+                                entityId,
+                                clickedAttachment,
+                                packet_use.getInteractAtPosition()
+                        ));
                         event.setCancelled(true);
                         return;
                     }
@@ -255,20 +266,86 @@ class TCPacketListener implements PacketListener {
         }
     }
 
-    public static void fakeAttack(final MinecartMember<?> member, final Player player) {
-        // Fix cross-thread access
-        if (!CommonUtil.isMainThread()) {
+    private void applySneaking(final AttachmentInteractEvent event) {
+        if (event.getPlayer().isSneaking() != event.isSneaking()) {
+            event.getPlayer().setSneaking(event.isSneaking());
+        }
+    }
+
+    public void handleInteractionWithAttachment(final MinecartMember<?> member, final AttachmentInteractEvent event) {
+        // Fix cross-thread access / sanity checks / sneaking handling
+        if (CommonUtil.isMainThread()) {
+            applySneaking(event);
+        } else {
             CommonUtil.nextTick(new Runnable() {
                 @Override
                 public void run() {
-                    fakeAttack(member, player);
+                    applySneaking(event);
+
+                    // Avoid errors down below when we check attachments...
+                    if (member.isUnloaded()) {
+                        return;
+                    }
+
+                    // Validate that the clicked attachment is still there and is the one that was clicked
+                    // Some weird asynchronous access could break this.
+                    AttachmentInteractEvent eventMut = event;
+                    if (!event.getAttachment().isAttached() || !event.getAttachment().containsEntityId(event.getInteractedEntityId())) {
+                        Attachment attachment = member.getAttachments().findAttachmentByEntityId(event.getInteractedEntityId());
+                        if (attachment == null || attachment == event.getAttachment()) {
+                            return; // Bugged?
+                        } else {
+                            eventMut = event.cloneWithDifferentAttachment(attachment);
+                        }
+                    }
+
+                    handleInteractionWithAttachment(member, eventMut);
                 }
             });
             return;
         }
 
-        // If member is unloaded or was despawned during this time, it's no longer valid
-        if (member == null || member.isUnloaded() || player == null || !player.isValid()) {
+        // If member or player is unloaded or was despawned during this time, it's no longer valid
+        if (member.isUnloaded() || !event.getPlayer().isValid()) {
+            return;
+        }
+
+        // Fire Bukkit event first, if not cancelled, also pass it by the actual attachment implementation
+        CommonUtil.callEvent(event);
+        if (!event.isCancelled()) {
+            event.getAttachment().onInteract(event);
+        }
+
+        // If not cancelled / default prevented, simulate default behavior
+        if (!event.isCancelled() && !event.isPreventDefault()) {
+            if (event.isAttack()) {
+                simulateDefaultAttack(member, event.getPlayer());
+            }
+            if (event.isInteract()) {
+                simulateDefaultInteract(member, event.getPlayer(), event.getHand(), event.getAtPosition());
+            }
+        }
+    }
+
+    /**
+     * Simulates the Player attacking a Minecart, handling default behavior for that
+     *
+     * @param member MinecartMember
+     * @param player Plaeyr that attacked
+     */
+    public void simulateDefaultAttack(final MinecartMember<?> member, final Player player) {
+        // Fix cross-thread access / sanity checks / sneaking handling
+        if (!CommonUtil.isMainThread()) {
+            CommonUtil.nextTick(new Runnable() {
+                @Override
+                public void run() {
+                    simulateDefaultAttack(member, player);
+                }
+            });
+            return;
+        }
+
+        if (member.isUnloaded() || !player.isValid()) {
             return;
         }
 
@@ -276,22 +353,33 @@ class TCPacketListener implements PacketListener {
         PlayerHandle.createHandle(playerHandleRaw).attack(member.getEntity().getEntity());
     }
 
-    public void fakeInteraction(final MinecartMember<?> member, final Player player, final HumanHand hand, final Vector atPosition) {
-        this.suppressAttacksFor(player, ATTACK_SUPPRESS_DURATION);
-
-        // Fix cross-thread access
+    /**
+     * Simulates the Player interacting with a Minecart, handling the default behavior of entering the vehicle
+     * and related Bukkit events for that.
+     *
+     * @param member MinecartMember
+     * @param player Player
+     * @param hand Hand used to interact
+     * @param atPosition At-position where the player clicked, or <i>null</i> if unknown
+     */
+    public void simulateDefaultInteract(
+            final MinecartMember<?> member,
+            final Player player,
+            final HumanHand hand,
+            final Vector atPosition
+    ) {
+        // Fix cross-thread access / sanity checks / sneaking handling
         if (!CommonUtil.isMainThread()) {
             CommonUtil.nextTick(new Runnable() {
                 @Override
                 public void run() {
-                    fakeInteraction(member, player, hand, atPosition);
+                    simulateDefaultInteract(member, player, hand, atPosition);
                 }
             });
             return;
         }
 
-        // If member is unloaded or was despawned during this time, it's no longer valid
-        if (member == null || member.isUnloaded() || player == null || !player.isValid()) {
+        if (member.isUnloaded() || !player.isValid()) {
             return;
         }
 
@@ -308,10 +396,23 @@ class TCPacketListener implements PacketListener {
             }
 
             // Post-1.9: EquipmentSlot parameter
-            PlayerInteractAtEntityEvent interactAtEvent = new PlayerInteractAtEntityEvent(player, member.getEntity().getEntity(), atPosition, slot);
-            if (CommonUtil.callEvent(interactAtEvent).isCancelled()) {
-                return;
+
+            // This event always fires
+            {
+                PlayerInteractAtEntityEvent interactAtEvent = new PlayerInteractAtEntityEvent(player, member.getEntity().getEntity(), atPosition, slot);
+                if (CommonUtil.callEvent(interactAtEvent).isCancelled()) {
+                    return;
+                }
             }
+
+            // Before 26.1.2, the PlayerInteractEntityEvent has a handler list separate from at, and needs to be fired also.
+            if (PlayerInteractAtEntityEvent.getHandlerList() != PlayerInteractEntityEvent.getHandlerList()) {
+                PlayerInteractEntityEvent interactAtEvent = new PlayerInteractEntityEvent(player, member.getEntity().getEntity(), slot);
+                if (CommonUtil.callEvent(interactAtEvent).isCancelled()) {
+                    return;
+                }
+            }
+
         } else {
             // Pre-1.9
             PlayerInteractEntityEvent interactEvent;

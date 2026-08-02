@@ -4,7 +4,10 @@ import static com.bergerkiller.bukkit.common.utils.MaterialUtil.getMaterial;
 
 import com.bergerkiller.bukkit.common.internal.CommonCapabilities;
 import com.bergerkiller.bukkit.common.map.widgets.MapWidget;
+import com.bergerkiller.bukkit.common.wrappers.Brightness;
+import com.bergerkiller.bukkit.tc.attachments.VirtualDisplayEntity;
 import com.bergerkiller.bukkit.tc.attachments.VirtualSpawnableObject;
+import com.bergerkiller.bukkit.tc.attachments.api.type.BrightnessAdjustable;
 import com.bergerkiller.bukkit.tc.attachments.config.transform.ItemTransformType;
 import com.bergerkiller.bukkit.tc.attachments.ui.MapWidgetItemTransformTypeSelector;
 import com.bergerkiller.bukkit.tc.attachments.ui.MapWidgetNumberBox;
@@ -29,7 +32,9 @@ import com.bergerkiller.bukkit.tc.attachments.helper.HelperMethods;
 import com.bergerkiller.bukkit.tc.attachments.ui.MapWidgetAttachmentNode;
 import com.bergerkiller.bukkit.tc.attachments.ui.item.MapWidgetItemSelector;
 
-public class CartAttachmentItem extends CartAttachment {
+public class CartAttachmentItem extends CartAttachment
+        implements Attachment.ItemDisplayAttachment, BrightnessAdjustable
+{
 
     public static final AttachmentType TYPE = new AttachmentType() {
         @Override
@@ -227,6 +232,45 @@ public class CartAttachmentItem extends CartAttachment {
         // New settings
         ItemTransformType.deserialize(config, "position.transform")
                 .load(entity, config, getConfiguredPosition());
+    }
+
+    @Override
+    public void setBrightness(Brightness brightness) {
+        if (entity instanceof BrightnessAdjustable) {
+            ((BrightnessAdjustable) entity).setBrightness(brightness);
+        }
+
+        // Make persistent
+        VirtualDisplayEntity.saveBrightnessToConfig(getConfig(), brightness);
+    }
+
+    @Override
+    public Brightness getBrightness() {
+        if (entity instanceof BrightnessAdjustable) {
+            return ((BrightnessAdjustable) entity).getBrightness();
+        } else {
+            return Brightness.UNSET;
+        }
+    }
+
+    @Override
+    public ItemStack getDisplayedItem() {
+        if (entity instanceof VirtualSpawnableObject.ItemDisplay) {
+            return ((VirtualSpawnableObject.ItemDisplay) entity).getItem();
+        } else {
+            return null;
+        }
+    }
+
+    @Override
+    public void setDisplayedItem(ItemStack item) {
+        // A little duplicate to set it explicitly, but ensures this mechanism works and it applies instantly
+        if (entity instanceof VirtualSpawnableObject.ItemDisplay) {
+            ((VirtualSpawnableObject.ItemDisplay) entity).setItem(item);
+        }
+
+        // Make persistent
+        getConfig().set("item", item);
     }
 
     @Override
